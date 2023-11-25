@@ -10,6 +10,6 @@ For this project we are using the VISTA simulator to train our vehicle agent in 
 Learn more about VISTA here:
 https://vista.csail.mit.edu/ 
 
-Setup VISTA following the instructions below (**NOTE:** To create a Conda environment download the environment.yaml file [HERE](https://github.com/vista-simulator/vista/tree/main)).
+Setup VISTA following the instructions link below (**NOTE:** To create a Conda environment download the environment.yaml file [HERE](https://github.com/vista-simulator/vista/tree/main)).
 
 https://vista.csail.mit.edu/getting_started/installation.html
