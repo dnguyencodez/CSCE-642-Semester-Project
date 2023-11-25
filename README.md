@@ -11,5 +11,4 @@ Learn more about VISTA here:
 https://vista.csail.mit.edu/ 
 
 Install VISTA following the instructions below (**NOTE:** To create a Conda environment download the environment.yaml file [HERE](https://github.com/vista-simulator/vista/tree/main)).
-
 https://vista.csail.mit.edu/getting_started/installation.html
