@@ -4,7 +4,7 @@
 
 ## Getting Started
 
-# VISTA Simulator
+### VISTA Simulator
 For this project we are using the VISTA simulator to train our vehicle agent in a virtual environment. VISTA is a data-based simulator that provides a flexible API to render environments. 
 
 Learn more about VISTA here:
