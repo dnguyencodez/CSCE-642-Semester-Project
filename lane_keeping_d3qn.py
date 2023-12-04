@@ -190,10 +190,9 @@ class environment:
         theta = abs(agent_yaw - road_dir)
 
         p_y = self.agent.relative_state.y
-        W_d = self.agent.trace.road_width / 2
 
-        road_half_width = self.agent.trace.road_width / 2.
-        i_fail = np.abs(self.agent.relative_state.x) > road_half_width
+        W_d = self.agent.trace.road_width / 2.
+        i_fail = np.abs(self.agent.relative_state.x) > W_d
 
         reward = math.cos(theta) - abs(p_y / W_d) - (2*i_fail)
 
