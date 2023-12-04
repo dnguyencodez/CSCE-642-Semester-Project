@@ -1,5 +1,6 @@
 import argparse
 from collections import deque, namedtuple
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,7 +41,12 @@ class DuelingDDQN(nn.Module):
     def _get_conv_output(self, shape):
         with torch.no_grad():
             input = torch.zeros(1, *shape)
-            output = self.conv3(self.conv2(self.conv1(input)))
+            output = self.conv1(input)
+            output = self.pool1(output)
+            output = self.conv2(output)
+            output = self.pool2(output)
+            output = self.conv3(output)
+            output = self.pool3(output)
             return int(np.prod(output.size()))
 
     def forward(self, state):
@@ -68,6 +74,7 @@ Creating the behavior and target neural networks
 Initializing the loss function and optimizer
 """
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 behavior_nn = DuelingDDQN(6191).to(device)
 target_nn = DuelingDDQN(6191).to(device)
 
@@ -122,18 +129,45 @@ class environment:
         road_half_width = self.agent.trace.road_width / 2.
         out_of_lane = np.abs(self.agent.relative_state.x) > road_half_width
 
+        not_near_center = np.abs(self.agent.relative_state.x) > road_half_width / 4
+
         maximal_rotation = np.pi / 10
         exceed_max_rotation = np.abs(self.agent.steering) > maximal_rotation
 
-        done = self.agent.done or out_of_lane or exceed_max_rotation
+        done = self.agent.done or out_of_lane 
 
+        # get other info
+        info = misc.fetch_agent_info(self.agent)
+        info['out_of_lane'] = out_of_lane
+        info['exceed_rot'] = exceed_max_rotation
+        
+        # Update car ego info
+        current_xy = self.agent.ego_dynamics.numpy()[:2]
+        dd = np.linalg.norm(current_xy - self.prev_xy)
+        self.distance += dd
+        self.prev_xy = current_xy
+        info['distance'] = self.distance
         # Compute reward
+        reward = 0 if not self.agent.done else 300
+        if out_of_lane:
+            reward = -100
+        elif exceed_max_rotation:
+            reward = -0.5
+        else:
+            reward = dd * 50
+        
+        if not_near_center:
+            reward -= 0.5
+        else:
+            reward += 2# Compute reward
         # reward = -1 if done else 0
 
         reward = 0
         if out_of_lane and exceed_max_rotation:
             reward = -1
-        elif out_of_lane or exceed_max_rotation:
+        elif out_of_lane:
+            reward = -0.75
+        elif exceed_max_rotation:
             reward = -0.5
         
         # get other info
@@ -156,11 +190,11 @@ class environment:
         prob = np.random.uniform()
         if prob < epsilon:
             action_idx = np.random.randint(len(self.action_space))
-            return self.action_space[action_idx]
+            return action_idx
         else:
             qs = behavior_nn.forward(state).cpu().data.numpy()
             action_idx = np.argmax(qs)
-            return self.action_space[action_idx]
+            return action_idx
 
 """
 Replay buffer class
@@ -190,17 +224,19 @@ def optimize_model(memory, batch_size, gamma):
 
     # convert to tensors and move to device
     state_batch = torch.cat([s for s in batch.state]).to(device)
-    action_batch = torch.cat([torch.tensor([a]).to(device) for a in batch.action])
+    state_batch = state_batch.permute(0, 3, 1, 2)
+    action_batch = torch.tensor(np.array(batch.action)).to(device).long()
     reward_batch = torch.cat([torch.tensor([r]).to(device) for r in batch.reward])
     next_state_batch = torch.cat([s for s in batch.next_state if s is not None]).to(device)
+    next_state_batch = next_state_batch.permute(0, 3, 1, 2)
     non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool).to(device)
 
     # Compute Q
-    state_action_values = behavior_nn(state_batch).gather(1, action_batch.unsqueeze(1))
+    state_action_values = behavior_nn.forward(state_batch).gather(1, action_batch.unsqueeze(1))
 
     # Compute V
     next_state_values = torch.zeros(batch_size).to(device)
-    next_state_values[non_final_mask] = target_nn(next_state_batch).max(1)[0].detach()
+    next_state_values[non_final_mask] = target_nn.forward(next_state_batch).max(1)[0].detach()
 
     # Compute the expected Q values
     expected_state_action_values = (next_state_values * gamma) + reward_batch
@@ -250,8 +286,15 @@ if __name__ == '__main__':
     epsilon_start = 1.0
     epsilon_end = 0.01
     epsilon_decay = 0.995
-    num_episodes = 500
+    num_episodes = 300
     target_update = 10  # Update target network every 10 episodes
+
+    best_dict = {}
+    best_dict_reward = -1e10
+
+    # per episode
+    rewards = np.array([])
+    num_steps = np.array([])
 
     epsilon = epsilon_start
     for episode in range(num_episodes):
@@ -260,44 +303,75 @@ if __name__ == '__main__':
         display.reset()
         total_reward = 0
         done = False
+        step = 0
 
         while not done:
             # Convert state to the appropriate format and move to device
             state_tensor = torch.from_numpy(state).unsqueeze(0).to(device)
 
             # Select action using epsilon greedy policy
-            action = env.epsilon_greedy_action(state_tensor, epsilon)
-            next_state, reward, done, _ = env.step(action)
+            action_idx = env.epsilon_greedy_action(state_tensor, epsilon)
+            next_state, reward, done, _ = env.step(env.action_space[action_idx])
             next_state = next_state['camera_front']
 
             # Convert next_state to tensor and move to device
             next_state_tensor = torch.from_numpy(next_state).unsqueeze(0).to(device) if next_state is not None else None
 
             # Store the transition in the replay buffer
-            replay_buffer.store((state_tensor, action, reward, next_state_tensor, done))
+            replay_buffer.store((state_tensor, action_idx, reward, next_state_tensor, done))
 
             state = next_state
             total_reward += reward
 
-            vis_img = display.render()
-
             # Optimize the model if the replay buffer has enough samples
             optimize_model(replay_buffer, batch_size, gamma)
 
-            cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
-            cv2.waitKey(20)
+            # Update the target network
+            if step % target_update == 0:
+                target_nn.load_state_dict(behavior_nn.state_dict())
 
-        print(f'Episode {episode}: Total Reward: {total_reward}, Epsilon: {epsilon}')
+            step += 1
+
+            # vis_img = display.render()
+            # cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
+            # cv2.waitKey(20)
+
+        rewards = np.append(rewards, total_reward / step)
+        num_steps = np.append(num_steps, step)
+
+        if total_reward > best_dict_reward:
+            best_dict = target_nn.state_dict()
+            best_dict_reward = total_reward
+
+        print(f'Episode {episode}: Total Reward: {total_reward}, Epsilon: {epsilon}, NumSteps: {step}')
 
         # Update epsilon
         epsilon = max(epsilon_end, epsilon_decay * epsilon)
-
-        # Update the target network
-        if episode % target_update == 0:
-            target_nn.load_state_dict(behavior_nn.state_dict())
+        
     
     # Save the model's state dictionary
-    torch.save(behavior_nn.state_dict(), 'behavior_nn_model.pth')
+    torch.save(target_nn.state_dict(), 'trained_target_nn.pth')
+    torch.save(best_dict, 'saves/v'+args.version[0]+'_best_dqn_network_nn_model.pth')
 
+    eps = np.arange(0, num_episodes)
+    print(f"rewards = {rewards}")
+    print(f"num_steps = {num_steps}")
 
+    # Create a line graph
+    plt.plot(eps, rewards)
 
+    # Add labels and a title
+    plt.xlabel('Training Episodes')
+    plt.ylabel('Total Reward per Episode')
+    plt.title('Total Reward')
+
+    # Display the plot
+    plt.show()
+
+    plt.plot(eps, num_steps)
+    plt.xlabel('Training Episodes')
+    plt.ylabel('Number of Steps per Episode')
+    plt.title('Steps per Episode')
+    # Display the plot
+    plt.show()
+    # env.agent.relative_state.
