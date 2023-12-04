@@ -11,6 +11,7 @@ from vista.entities.agents.Dynamics import tireangle2curvature
 from vista.utils import logging, misc
 import random
 import cv2
+import math
 
 """
 Creating the D3QN class that splits into two streams: advantage and value
@@ -91,11 +92,13 @@ class environment:
             trace_paths,
             trace_config,
             car_config,
-            sensor_config
+            sensor_config,
+            reward_function
     ):
         self.world = vista.World(trace_paths, trace_config)
         self.agent = self.world.spawn_agent(car_config)
         self.agent.spawn_camera(sensor_config)
+        self.rf = reward_function
 
         self.distance = 0
         self.prev_xy = np.zeros((2, ))
@@ -120,10 +123,13 @@ class environment:
         self.prev_xy = np.zeros((2, ))
         return observations
     
-    def step(self, action, dt = 1/30):
-        self.agent.step_dynamics(action, dt=dt)
-        self.agent.step_sensors()
-        next_state = self.agent.observations
+    def reward_1(self):
+        """
+        Discrete reward function:
+        - penalize the agent heavily for getting out of lane
+        - penalize for exceeding max rotation
+        - penalize for not being centered on the road
+        """
 
         # Defining conditions for reward function
         road_half_width = self.agent.trace.road_width / 2.
@@ -136,17 +142,9 @@ class environment:
 
         done = self.agent.done or out_of_lane 
 
-        # get other info
-        info = misc.fetch_agent_info(self.agent)
-        info['out_of_lane'] = out_of_lane
-        info['exceed_rot'] = exceed_max_rotation
-        
-        # Update car ego info
         current_xy = self.agent.ego_dynamics.numpy()[:2]
         dd = np.linalg.norm(current_xy - self.prev_xy)
-        self.distance += dd
-        self.prev_xy = current_xy
-        info['distance'] = self.distance
+
         # Compute reward
         reward = 0 if not self.agent.done else 300
         if out_of_lane:
@@ -169,17 +167,54 @@ class environment:
             reward = -0.75
         elif exceed_max_rotation:
             reward = -0.5
+
+        return reward, done
+    
+    def reward_2(self):
+        """
+        Continous reward function:
+        r = c1*cos(theta) - c2*abs(P_y / W_d) - c3 * I_fail
+        - c1,c2,c3 are coefficients with values 1,1,2 respectively
+        - theta is the angle between road direction and vehicle
+        - P_y is is the lateral position error between the road center and the gravity center of the vehicle
+        - W_d is the lane width
+        - I_fail = 1 if agent is out of lane and 0 otherwise
+        First term is used to encourage staying along the road, second term is to encourage being centered,
+        third term is to heavily penalize going off road
+        """
+
+        # angle between road tangent and vehicle
+        # using human yaw as road direction is not available
+        agent_yaw = self.agent.ego_dynamics.yaw
+        road_dir = self.agent.human_dynamics.yaw
+        theta = abs(agent_yaw - road_dir)
+
+        p_y = self.agent.relative_state.y
+        W_d = self.agent.trace.road_width / 2
+
+        road_half_width = self.agent.trace.road_width / 2.
+        i_fail = np.abs(self.agent.relative_state.x) > road_half_width
+
+        reward = math.cos(theta) - abs(p_y / W_d) - (2*i_fail)
+
+        return reward, self.agent.done
+
+    
+    def step(self, action, dt = 1/30):
+        self.agent.step_dynamics(action, dt=dt)
+        self.agent.step_sensors()
+        next_state = self.agent.observations
         
         # get other info
         info = misc.fetch_agent_info(self.agent)
-        info['out_of_lane'] = out_of_lane
-        info['exceed_rot'] = exceed_max_rotation
         
         # Update car ego info
         current_xy = self.agent.ego_dynamics.numpy()[:2]
         self.distance += np.linalg.norm(current_xy - self.prev_xy)
         self.prev_xy = current_xy
         info['distance'] = self.distance
+
+        reward, done = self.reward_1() if self.rf == 0 else self.reward_2()
 
         return next_state, reward, done, info
     
@@ -259,6 +294,12 @@ if __name__ == '__main__':
                         type=str,
                         nargs='+',
                         help='Path to the traces to use for simulation')
+    parser.add_argument('--reward-function',
+                        type=int,
+                        nargs='+',
+                        help='Choose reward function 1 for standard or 2 for advanced',
+                        required=True
+                        )
     args = parser.parse_args()
 
     trace_config={'road_width': 4}
@@ -374,5 +415,3 @@ if __name__ == '__main__':
     plt.title('Steps per Episode')
     # Display the plot
     plt.show()
-    
-    # env.agent.relative_state.
