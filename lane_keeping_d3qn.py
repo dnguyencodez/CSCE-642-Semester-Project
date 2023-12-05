@@ -318,7 +318,7 @@ if __name__ == '__main__':
         'size': (200, 320),
     }
 
-    env = environment(args.trace_path, trace_config, car_config, sensor_config, 2)
+    env = environment(args.trace_path, trace_config, car_config, sensor_config, args.reward_function)
     display = vista.Display(env.world)
 
 
