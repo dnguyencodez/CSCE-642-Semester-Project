@@ -12,6 +12,7 @@ from vista.utils import logging, misc
 import random
 import cv2
 import math
+import json
 
 """
 Creating the D3QN class that splits into two streams: advantage and value
@@ -172,31 +173,35 @@ class environment:
     
     def reward_2(self):
         """
-        Continous reward function:
-        r = c1*cos(theta) - c2*abs(P_y / W_d) - c3 * I_fail
-        - c1,c2,c3 are coefficients with values 1,1,2 respectively
-        - theta is the angle between road direction and vehicle
-        - P_y is is the lateral position error between the road center and the gravity center of the vehicle
-        - W_d is the lane width
-        - I_fail = 1 if agent is out of lane and 0 otherwise
-        First term is used to encourage staying along the road, second term is to encourage being centered,
-        third term is to heavily penalize going off road
+        Reward function that does not account for max rotation exceeded
         """
+        road_half_width = self.agent.trace.road_width / 2.
+        out_of_lane = np.abs(self.agent.relative_state.x) > road_half_width
 
-        # angle between road tangent and vehicle
-        # using human yaw as road direction is not available
-        agent_yaw = self.agent.ego_dynamics.yaw
-        road_dir = self.agent.human_dynamics.yaw
-        theta = abs(agent_yaw - road_dir)
+        not_near_center = np.abs(self.agent.relative_state.x) > road_half_width / 4
 
-        p_y = self.agent.relative_state.y
+        maximal_rotation = np.pi / 10
+        exceed_max_rotation = np.abs(self.agent.steering) > maximal_rotation
 
-        W_d = self.agent.trace.road_width / 2.
-        i_fail = np.abs(self.agent.relative_state.x) > W_d
+        done = self.agent.done or out_of_lane 
 
-        reward = math.cos(theta) - abs(p_y / W_d) - (2*i_fail)
+        current_xy = self.agent.ego_dynamics.numpy()[:2]
+        dd = np.linalg.norm(current_xy - self.prev_xy)
 
-        return reward, self.agent.done
+        # Compute reward
+        reward = 0 if not self.agent.done else 300
+        if out_of_lane:
+            reward = -100
+        else:
+            reward = dd * 5
+        
+        if not_near_center:
+            reward -= 0.5
+        else:
+            reward += 2# Compute reward
+        # reward = -1 if done else 0
+
+        return reward, done
 
     
     def step(self, action, dt = 1/30):
@@ -213,7 +218,7 @@ class environment:
         self.prev_xy = current_xy
         info['distance'] = self.distance
 
-        reward, done = self.reward_1() if self.rf == 0 else self.reward_2()
+        reward, done = self.reward_1() if self.rf == 1 else self.reward_2()
 
         return next_state, reward, done, info
     
@@ -313,7 +318,7 @@ if __name__ == '__main__':
         'size': (200, 320),
     }
 
-    env = environment(args.trace_path, trace_config, car_config, sensor_config)
+    env = environment(args.trace_path, trace_config, car_config, sensor_config, 2)
     display = vista.Display(env.world)
 
 
@@ -333,8 +338,9 @@ if __name__ == '__main__':
     best_dict_reward = -1e10
 
     # per episode
-    rewards = np.array([])
-    num_steps = np.array([])
+    rewards = []
+    eps = []
+    num_steps = []
 
     epsilon = epsilon_start
     for episode in range(num_episodes):
@@ -376,8 +382,14 @@ if __name__ == '__main__':
             # cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
             # cv2.waitKey(20)
 
-        rewards = np.append(rewards, total_reward / step)
-        num_steps = np.append(num_steps, step)
+            # if done:
+            #     # Close the window if the episode is done
+            #     cv2.destroyWindow(f'Car Agent in Episode {episode}')
+            #     break
+
+        rewards.append(total_reward)
+        eps.append(episode)
+        num_steps.append(step)
 
         if total_reward > best_dict_reward:
             best_dict = target_nn.state_dict()
@@ -390,27 +402,19 @@ if __name__ == '__main__':
         
     
     # Save the model's state dictionary
-    torch.save(target_nn.state_dict(), 'trained_target_nn.pth')
-    torch.save(best_dict, 'saves/v'+args.version[0]+'_best_dqn_network_nn_model.pth')
+    torch.save(target_nn.state_dict(), 'r2_trained_target_nn.pth')
+    torch.save(best_dict, '_best_dqn_network_nn_model.pth')
 
-    eps = np.arange(0, num_episodes)
+    data = {
+        "rewards": rewards,
+        "episodes": eps,
+        "steps": num_steps
+    }
+
+    # Write the data to a JSON file
+    with open('training_data.json', 'w') as file:
+        json.dump(data, file, indent=4)
+
+    # eps = np.arange(0, num_episodes)
     print(f"rewards = {rewards}")
     print(f"num_steps = {num_steps}")
-
-    # Create a line graph
-    plt.plot(eps, rewards)
-
-    # Add labels and a title
-    plt.xlabel('Training Episodes')
-    plt.ylabel('Total Reward per Episode')
-    plt.title('Total Reward')
-
-    # Display the plot
-    plt.show()
-
-    plt.plot(eps, num_steps)
-    plt.xlabel('Training Episodes')
-    plt.ylabel('Number of Steps per Episode')
-    plt.title('Steps per Episode')
-    # Display the plot
-    plt.show()
