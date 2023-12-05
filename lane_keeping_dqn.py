@@ -43,7 +43,6 @@ class DQN(nn.Module):
     def _get_conv_output(self, shape):
         with torch.no_grad():
             input = torch.zeros(1, *shape)
-            print(f"input.shape = {input.shape}")
 
             output = F.relu(self.pool1(self.conv1(input)))
             output = F.relu(self.pool2(self.conv2(output)))
@@ -133,7 +132,7 @@ class environment:
         road_half_width = self.agent.trace.road_width / 2.
         out_of_lane = np.abs(self.agent.relative_state.x) > road_half_width
 
-        not_near_center = np.abs(self.agent.relative_state.x) > road_half_width / 4
+        not_near_center = np.abs(self.agent.relative_state.x) > road_half_width / 2
 
         maximal_rotation = np.pi / 2
         exceed_max_rotation = np.abs(self.agent.steering) > maximal_rotation
@@ -155,16 +154,14 @@ class environment:
         reward = 0 if not self.agent.done else 300
         if out_of_lane:
             reward = -100
-        elif exceed_max_rotation:
-            reward = -0.5
         else:
-            reward = dd * 50
-        
+            reward = dd * 5
+
         if not_near_center:
             reward -= 0.5
         else:
             reward += 2
-
+        
         return next_state, reward, done, info
     
 
@@ -325,11 +322,10 @@ if __name__ == '__main__':
         epsilon_start = 1.0
         epsilon_end = 0.01
         epsilon_decay = 0.995
-        num_episodes = 200
+        num_episodes = 300
         target_update = 10  # Update target network every 10 episodes
-        max_num_steps = 10000
+        max_num_steps = 1000
 
-        best_dict = {}
         best_dict_reward = -1e10
 
         # per episode
@@ -381,13 +377,14 @@ if __name__ == '__main__':
                     target_network.load_state_dict(network.state_dict())
 
                 step += 1
-                # cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
-                # cv2.waitKey(5)
+                cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
+                cv2.waitKey(5)
             rewards = np.append(rewards, total_reward / step)
             num_steps = np.append(num_steps, step)
 
             if total_reward > best_dict_reward:
-                best_dict = target_network.state_dict()
+                print("Saving new best")
+                torch.save(target_network.state_dict(), 'saves/v'+args.version[0]+'_best_dqn_network_nn_model.pth')
                 best_dict_reward = total_reward
 
             print(f'Episode {episode}: Total Reward: {total_reward}, Epsilon: {epsilon}, NumSteps: {step}')
@@ -397,12 +394,12 @@ if __name__ == '__main__':
         
         # Save the model's state dictionary
         torch.save(target_network.state_dict(), 'saves/v'+args.version[0]+'_final_dqn_network_nn_model.pth')
-        torch.save(best_dict, 'saves/v'+args.version[0]+'_best_dqn_network_nn_model.pth')
 
         eps = np.arange(0, num_episodes)
         print(f"rewards = {rewards}")
         print(f"num_steps = {num_steps}")
-
+        display.render()
+        plt.show()
         # Create a line graph
         plt.plot(eps, rewards)
 
@@ -425,7 +422,7 @@ if __name__ == '__main__':
     elif args.operation[0].lower() == 'load':
         target_network.load_state_dict(torch.load(args.save_path[0]))
         target_network.eval()
-
+        max_num_steps = 1000
         state = env.reset()['camera_front']
         display.reset()
         total_reward = 0
@@ -434,36 +431,25 @@ if __name__ == '__main__':
         while step < max_num_steps and not done:
             # Convert state to the appropriate format and move to device
             state_tensor = torch.from_numpy(state).unsqueeze(0).to(device)
+            q_values = target_network(state_tensor.permute(0, 3, 1, 2)).cpu().data.numpy()
+            action = env.action_space[np.argmax(q_values)]
 
-            # Select action using epsilon greedy policy
-            action = env.epsilon_greedy_action(state_tensor, epsilon)
             next_state, reward, done, _ = env.step(action)
             next_state = next_state['camera_front']
 
             # Convert next_state to tensor and move to device
             next_state_tensor = torch.from_numpy(next_state).unsqueeze(0).to(device) if next_state is not None else None
-
-            # Store the transition in the replay buffer
-            # action_tensor = torch.zeros(1, NUM_ACTIONS, dtype=torch.int64)
-            # print(f"action_tensor = {action_tensor}")
-            # print(f"action_tensor.shape = {action_tensor.shape}")
-            # print(f"action = {action}")
-            # print(f"action.shape = {action.shape}")
-            # print(f"env.action_idx = {env.action_idx}")
-            # action_tensor[0][env.action_idx] = 1
-
-            # replay_buffer.store((state_tensor, env.action_idx, reward, next_state_tensor, done))
+            next_state_tensor.to(device)
 
             state = next_state
-            total_reward += reward
 
             vis_img = display.render()
 
-            # Optimize the model if the replay buffer has enough samples
-            # optimize_model(replay_buffer, batch_size, gamma)
+            total_reward += reward
 
             step += 1
-            cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
+            cv2.imshow(f'Evaluating Car Agent', vis_img[:, :, ::-1])
             cv2.waitKey(5)
+        print(f"Total reward = {total_reward}; Steps = {step}")
     else:   
         print("incorrect operation command, only 'new' or 'load' allowed")
