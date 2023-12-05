@@ -202,6 +202,39 @@ class environment:
         # reward = -1 if done else 0
 
         return reward, done
+    
+    def reward_3(self):
+        """
+        Continous reward function:
+        r = c1*cos(theta) - c2*abs(P_y / W_d) - c3 * I_fail
+        - c1,c2,c3 are coefficients with values 1,1,2 respectively
+        - theta is the angle between road direction and vehicle
+        - P_y is is the lateral position error between the road center and the gravity center of the vehicle
+        - W_d is the lane width
+        - I_fail = 1 if agent is out of lane and 0 otherwise
+        First term is used to encourage staying along the road, second term is to encourage being centered,
+        third term is to heavily penalize going off road
+        """
+
+        # angle between road tangent and vehicle
+        agent_yaw = self.agent.ego_dynamics.yaw
+        road_dir = self.agent.human_dynamics.yaw
+        theta = abs(agent_yaw - road_dir)
+
+        # Normalize theta to [-pi, pi]
+        theta = (theta + np.pi) % (2 * np.pi) - np.pi
+
+        p_y = self.agent.relative_state.y
+        W_d = self.agent.trace.road_width / 2.
+        
+        # i_fail is 1 if out of lane, else 0
+        i_fail = 1 if np.abs(self.agent.relative_state.x) > W_d else 0
+
+        # Reward calculation
+        reward = math.cos(theta) - abs(p_y / W_d) - (2 * i_fail)
+
+        return reward, self.agent.done
+
 
     
     def step(self, action, dt = 1/30):
@@ -218,7 +251,19 @@ class environment:
         self.prev_xy = current_xy
         info['distance'] = self.distance
 
-        reward, done = self.reward_1() if self.rf == 1 else self.reward_2()
+         # Calculate lateral distance from road center
+        lateral_distance = np.abs(self.agent.relative_state.x)
+        road_half_width = self.agent.trace.road_width / 2.
+        
+        # Set a threshold for being too far off the road
+        max_allowed_distance = road_half_width * 3  # Example threshold
+
+        # Check if the agent is too far off the road
+        too_far_off_road = lateral_distance > max_allowed_distance
+        done = self.agent.done or too_far_off_road
+
+        # reward, _ = self.reward_1() if self.rf == 1 else self.reward_2()
+        reward, _ = self.reward_3()
 
         return next_state, reward, done, info
     
@@ -378,14 +423,14 @@ if __name__ == '__main__':
 
             step += 1
 
-            # vis_img = display.render()
-            # cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
-            # cv2.waitKey(20)
+            vis_img = display.render()
+            cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
+            cv2.waitKey(20)
 
-            # if done:
-            #     # Close the window if the episode is done
-            #     cv2.destroyWindow(f'Car Agent in Episode {episode}')
-            #     break
+            if done:
+                # Close the window if the episode is done
+                cv2.destroyWindow(f'Car Agent in Episode {episode}')
+                break
 
         rewards.append(total_reward)
         eps.append(episode)
