@@ -375,9 +375,10 @@ if __name__ == '__main__':
     gamma = 0.99 
     epsilon_start = 1.0
     epsilon_end = 0.01
-    epsilon_decay = 0.995
-    num_episodes = 300
+    epsilon_decay = 0.96
+    num_episodes = 200
     target_update = 10  # Update target network every 10 episodes
+    max_steps = 700
 
     best_dict = {}
     best_dict_reward = -1e10
@@ -421,16 +422,19 @@ if __name__ == '__main__':
             if step % target_update == 0:
                 target_nn.load_state_dict(behavior_nn.state_dict())
 
+            if step > max_steps:
+                break
+
             step += 1
 
-            vis_img = display.render()
-            cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
-            cv2.waitKey(20)
+            # vis_img = display.render()
+            # cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
+            # cv2.waitKey(20)
 
-            if done:
-                # Close the window if the episode is done
-                cv2.destroyWindow(f'Car Agent in Episode {episode}')
-                break
+            # if done:
+            #     # Close the window if the episode is done
+            #     cv2.destroyWindow(f'Car Agent in Episode {episode}')
+            #     break
 
         rewards.append(total_reward)
         eps.append(episode)
