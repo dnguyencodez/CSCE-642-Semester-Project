@@ -12,6 +12,7 @@ from vista.utils import logging, misc
 import random
 import cv2
 import matplotlib.pyplot as plt
+import math
 
 from warnings import filterwarnings
 filterwarnings(action='ignore', category=DeprecationWarning, message='In future, it will be an error for \'np.bool_\' scalars to be interpreted as an index')
@@ -123,45 +124,68 @@ class environment:
         self.action_idx = -1
         return observations
     
+    def reward_3(self):
+        """
+        Continous reward function:
+        r = c1*cos(theta) - c2*abs(P_y / W_d) - c3 * I_fail
+        - c1,c2,c3 are coefficients with values 1,1,2 respectively
+        - theta is the angle between road direction and vehicle
+        - P_y is is the lateral position error between the road center and the gravity center of the vehicle
+        - W_d is the lane width
+        - I_fail = 1 if agent is out of lane and 0 otherwise
+        First term is used to encourage staying along the road, second term is to encourage being centered,
+        third term is to heavily penalize going off road
+        """
+
+        # angle between road tangent and vehicle
+        agent_yaw = self.agent.ego_dynamics.yaw
+        road_dir = self.agent.human_dynamics.yaw
+        theta = abs(agent_yaw - road_dir)
+
+        # Normalize theta to [-pi, pi]
+        theta = (theta + np.pi) % (2 * np.pi) - np.pi
+
+        p_y = self.agent.relative_state.y
+        W_d = self.agent.trace.road_width / 2.
+        
+        # i_fail is 1 if out of lane, else 0
+        i_fail = 1 if np.abs(self.agent.relative_state.x) > W_d else 0
+
+        # Reward calculation
+        reward = math.cos(theta) - abs(p_y / W_d) - (2 * i_fail)
+
+        return reward, self.agent.done
+
+
+    
     def step(self, action, dt = 1/30):
         self.agent.step_dynamics(action, dt=dt)
         self.agent.step_sensors()
         next_state = self.agent.observations
-
-        # Defining conditions for reward function
-        road_half_width = self.agent.trace.road_width / 2.
-        out_of_lane = np.abs(self.agent.relative_state.x) > road_half_width
-
-        not_near_center = np.abs(self.agent.relative_state.x) > road_half_width / 2
-
-        maximal_rotation = np.pi / 2
-        exceed_max_rotation = np.abs(self.agent.steering) > maximal_rotation
-
-        done = self.agent.done or out_of_lane# or exceed_max_rotation
-
+        
         # get other info
         info = misc.fetch_agent_info(self.agent)
-        info['out_of_lane'] = out_of_lane
-        info['exceed_rot'] = exceed_max_rotation
         
         # Update car ego info
         current_xy = self.agent.ego_dynamics.numpy()[:2]
-        dd = np.linalg.norm(current_xy - self.prev_xy)
-        self.distance += dd
+        self.distance += np.linalg.norm(current_xy - self.prev_xy)
         self.prev_xy = current_xy
         info['distance'] = self.distance
-        # Compute reward
-        reward = 0 if not self.agent.done else 300
-        if out_of_lane:
-            reward = -100
-        else:
-            reward = dd * 5
 
-        if not_near_center:
-            reward -= 0.5
-        else:
-            reward += 2
+         # Calculate lateral distance from road center
+        lateral_distance = np.abs(self.agent.relative_state.x)
+        road_half_width = self.agent.trace.road_width / 2.
         
+        # Set a threshold for being too far off the road
+        max_allowed_distance = road_half_width * 3  # Example threshold
+
+        # Check if the agent is too far off the road
+        too_far_off_road = lateral_distance > max_allowed_distance
+        done = self.agent.done or too_far_off_road
+
+        # reward, _ = self.reward_1() if self.rf == 1 else self.reward_2()
+        reward, _ = self.reward_3()
+
         return next_state, reward, done, info
     
 
@@ -321,10 +345,10 @@ if __name__ == '__main__':
         gamma = 0.99 
         epsilon_start = 1.0
         epsilon_end = 0.01
-        epsilon_decay = 0.995
-        num_episodes = 300
+        epsilon_decay = 0.96
+        num_episodes = 200
         target_update = 10  # Update target network every 10 episodes
-        max_num_steps = 1000
+        max_num_steps = 700
 
         best_dict_reward = -1e10
 
@@ -368,7 +392,7 @@ if __name__ == '__main__':
                 state = next_state
                 total_reward += reward
 
-                vis_img = display.render()
+                # vis_img = display.render()
 
                 # Optimize the model if the replay buffer has enough samples
                 optimize_model(replay_buffer, batch_size, gamma)
@@ -377,8 +401,8 @@ if __name__ == '__main__':
                     target_network.load_state_dict(network.state_dict())
 
                 step += 1
-                cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
-                cv2.waitKey(5)
+                # cv2.imshow(f'Car Agent in Episode {episode}', vis_img[:, :, ::-1])
+                # cv2.waitKey(5)
             rewards = np.append(rewards, total_reward / step)
             num_steps = np.append(num_steps, step)
 
